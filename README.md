@@ -1,6 +1,17 @@
-# TradingView Screener - 글로벌 주식 종목 스크리닝
+# 🔍 Market Lens AI - AI 기반 글로벌 주식 분석 플랫폼
 
-`tradingview-screener` 라이브러리를 사용하여 TradingView 데이터 기반으로 **4가지 투자 전략**에 따라 글로벌 주식 종목을 스크리닝하는 Python 프로젝트입니다.
+TradingView Screener와 Gemini AI를 활용하여 **스크리닝 → 심층 분석 → 포트폴리오 추천**까지 자동화된 투자 분석 파이프라인을 제공합니다.
+
+## ✨ 주요 기능
+
+| 단계 | 스크립트 | 설명 |
+|------|----------|------|
+| 1️⃣ | `stock_screener.py` | 4가지 투자 전략 기반 글로벌 종목 스크리닝 |
+| 2️⃣ | `stock_analyzer.py` | Gemini AI를 활용한 종목별 심층 분석 보고서 생성 |
+| 3️⃣ | `portfolio_maker.py` | 최종 추천 종목 및 포트폴리오 예산 분배 전략 제시 |
+| 🚀 | `live_process.py` | 1→2→3 전체 파이프라인 자동 실행 |
+
+---
 
 ## 🎯 4가지 투자 전략
 
@@ -52,69 +63,112 @@
 
 ## 📦 설치
 
+### 1. 의존성 설치
+
 ```bash
 pip install -r requirements.txt
 ```
 
-또는 개별 설치:
+### 2. 환경 변수 설정
+
+Gemini API 키를 `.env` 파일에 설정하세요:
 
 ```bash
-pip install tradingview-screener pandas matplotlib seaborn jupyter
+# .env 파일 생성
+echo "GOOGLE_API_KEY=your_api_key_here" > .env
 ```
 
-### 의존성
+또는 환경 변수로 직접 설정:
+
+```bash
+export GOOGLE_API_KEY="your_api_key_here"
+```
+
+### 의존성 목록
 
 | 패키지 | 버전 | 설명 |
 |--------|------|------|
 | tradingview-screener | >= 3.0.0 | TradingView 스크리너 API |
+| google-genai | >= 1.0.0 | Gemini AI API |
 | pandas | >= 2.0.0 | 데이터 분석 |
-| matplotlib | >= 3.7.0 | 시각화 |
-| seaborn | >= 0.12.0 | 통계 시각화 |
-| jupyter | >= 1.0.0 | 노트북 환경 |
+| python-dotenv | >= 1.0.0 | 환경 변수 관리 |
 
 ---
 
-## 📁 파일 구조
+## 📁 프로젝트 구조
 
 ```
-tradingview_screener/
-├── README.md                      # 프로젝트 설명 (현재 파일)
-├── requirements.txt               # 의존성 목록
-├── .gitignore                     # Git 제외 파일 목록
-├── global_screener_spec.md        # 4가지 투자 전략 스펙 문서
-├── stock_screener.py              # 모듈화된 스크리너 (import용)
-├── global_screener.py             # CLI 스크리너 (직접 실행용)
-├── stock_screener_notebook.ipynb  # Jupyter 노트북 (인터랙티브)
-└── output/                        # 스크리닝 결과 저장 디렉토리
-    └── {timestamp}/               # 실행 시점별 결과 폴더
-        ├── global_cyclical.csv
-        ├── global_growth.csv
-        ├── global_finance.csv
-        └── global_defensive.csv
+market_lens_ai/
+├── README.md                 # 프로젝트 설명 (현재 파일)
+├── requirements.txt          # 의존성 목록
+├── .env                      # API 키 설정 (gitignore)
+│
+├── live_process.py           # 🚀 전체 파이프라인 실행기
+├── stock_screener.py         # 📊 종목 스크리닝
+├── stock_analyzer.py         # 🤖 AI 종목 분석
+├── portfolio_maker.py        # 🎯 포트폴리오 추천
+│
+└── output/                   # 결과 저장 디렉토리
+    ├── screener/             # 스크리닝 결과 (CSV)
+    │   └── {YYYYMMDD}/
+    │       ├── global_cyclical.csv
+    │       ├── global_growth.csv
+    │       ├── global_finance.csv
+    │       └── global_defensive.csv
+    ├── analyzer/             # 분석 보고서 (MD)
+    │   └── {YYYYMMDD}/
+    │       ├── analysis_cyclical.md
+    │       ├── analysis_growth.md
+    │       ├── analysis_finance.md
+    │       ├── analysis_defensive.md
+    │       └── investment_report.md
+    └── portfolio/            # 포트폴리오 추천 (MD)
+        └── {YYYYMMDD}/
+            └── final_recommendation.md
 ```
-
-| 파일 | 용도 |
-|------|------|
-| `stock_screener.py` | 모듈로 import하여 사용, 함수 단위 호출 가능 |
-| `global_screener.py` | CLI로 직접 실행, 결과 터미널 출력 |
-| `stock_screener_notebook.ipynb` | Jupyter 환경에서 인터랙티브 분석 |
-| `output/` | CSV 결과 파일 저장 (타임스탬프별 폴더) |
 
 ---
 
 ## 🚀 빠른 시작
 
-### 1. Python 스크립트 실행 (CLI)
+### 전체 파이프라인 실행 (권장)
 
 ```bash
-# 4가지 전략 모두 실행
-python global_screener.py
+# 기본 실행 (전략당 1개 종목 분석)
+python live_process.py
 
-# 또는
-python stock_screener.py
+# 전략당 3개 종목 분석
+python live_process.py -m 3
+
+# 스크리닝 건너뛰기 (기존 결과 사용)
+python live_process.py --skip-screener
+
+# 포트폴리오 추천 건너뛰기
+python live_process.py --skip-portfolio
 ```
 
-### 2. 모듈로 import하여 사용
+### 개별 단계 실행
+
+```bash
+# Step 1: 스크리닝만 실행
+python stock_screener.py
+
+# Step 2: 분석만 실행 (가장 최근 screener 결과 사용)
+python stock_analyzer.py
+# 또는 특정 screener 폴더 지정
+python stock_analyzer.py output/screener/20251207
+
+# Step 3: 포트폴리오 추천만 실행 (가장 최근 analyzer 결과 사용)
+python portfolio_maker.py
+# 또는 특정 analyzer 폴더 지정
+python portfolio_maker.py output/analyzer/20251207
+```
+
+---
+
+## 💡 모듈 사용법
+
+### 스크리너 모듈
 
 ```python
 from stock_screener import (
@@ -124,88 +178,38 @@ from stock_screener import (
     screen_defensive,
     run_all_screeners,
     save_results,
-    create_output_dir
 )
 
 # 개별 전략 실행
 count, df = screen_growth(filter_sector=True)
 print(f"Growth 종목: {len(df)}개")
 
-# 전체 전략 실행
+# 전체 전략 실행 및 저장
 results = run_all_screeners()
-
-# 결과 저장 (CSV) - output/{timestamp}/ 디렉토리에 자동 저장
 save_results(results)
-
-# 커스텀 디렉토리에 저장
-save_results(results, output_dir='my_results')
 ```
 
-### 3. Jupyter Notebook 실행
-
-```bash
-jupyter notebook stock_screener_notebook.ipynb
-```
-
----
-
-## 💡 주요 기능
-
-### 기본 스크리닝
+### 분석 모듈
 
 ```python
-from tradingview_screener import Query, col
+from stock_analyzer import StockAnalyzer
 
-# 상위 50개 종목 조회
-count, df = (
-    Query()
-    .select('name', 'close', 'volume', 'market_cap_basic')
-    .get_scanner_data()
+analyzer = StockAnalyzer()
+analyses, output_dir = analyzer.run_analysis(
+    screener_dir='output/screener/20251207',
+    max_stocks_per_strategy=3
 )
 ```
 
-### 조건부 필터링
+### 포트폴리오 모듈
 
 ```python
-count, df = (
-    Query()
-    .select('name', 'close', 'volume', 'change')
-    .where(
-        col('market_cap_basic') > 1_000_000_000,  # 시총 10억 달러 이상
-        col('change') > 5,                        # 5% 이상 상승
-        col('volume') > 1_000_000                 # 거래량 100만주 이상
-    )
-    .order_by('change', ascending=False)
-    .limit(20)
-    .get_scanner_data()
+from portfolio_maker import PortfolioMaker
+
+maker = PortfolioMaker()
+result, output_dir = maker.generate_recommendation(
+    analyzer_dir='output/analyzer/20251207'
 )
-```
-
-### 기술적 지표 활용 (MACD, RSI)
-
-```python
-# MACD 골든 크로스 + RSI 조건
-count, df = (
-    Query()
-    .select('name', 'close', 'MACD.macd', 'MACD.signal', 'RSI')
-    .where(
-        col('MACD.macd') >= col('MACD.signal'),  # MACD 골든크로스
-        col('RSI').between(30, 70)               # RSI 30~70 구간
-    )
-    .get_scanner_data()
-)
-```
-
-### 애널리스트 평점 계산
-
-```python
-from stock_screener import calculate_analyst_score, filter_by_analyst
-
-# 애널리스트 점수 계산 (-2 ~ 2 스케일)
-df = calculate_analyst_score(df)
-
-# Buy 이상 필터링 (score >= 0.5)
-df = filter_by_analyst(df, min_score=0.5)
 ```
 
 ---
@@ -220,22 +224,6 @@ df = filter_by_analyst(df, min_score=0.5)
 | `high` | 고가 |
 | `low` | 저가 |
 | `change` | 변동률 (%) |
-| `price_52_week_high` | 52주 최고가 |
-| `price_52_week_low` | 52주 최저가 |
-
-### 거래량 관련
-| 필드 | 설명 |
-|------|------|
-| `volume` | 거래량 |
-| `relative_volume_10d_calc` | 10일 평균 대비 상대 거래량 |
-
-### 기술적 지표
-| 필드 | 설명 |
-|------|------|
-| `RSI` | RSI (14일) |
-| `MACD.macd` | MACD 라인 |
-| `MACD.signal` | MACD 시그널 라인 |
-| `Recommend.All` | 기술 등급 (-1 ~ 1) |
 
 ### 펀더멘탈
 | 필드 | 설명 |
@@ -262,44 +250,6 @@ df = filter_by_analyst(df, min_score=0.5)
 | `recommendation_under` | Sell 의견 수 |
 | `recommendation_sell` | Strong Sell 의견 수 |
 | `recommendation_total` | 총 애널리스트 수 |
-
-### 분류
-| 필드 | 설명 |
-|------|------|
-| `sector` | 섹터 |
-| `industry` | 산업 |
-| `exchange` | 거래소 |
-
-### 성과
-| 필드 | 설명 |
-|------|------|
-| `Perf.W` | 주간 수익률 |
-| `Perf.1M` | 월간 수익률 |
-| `Perf.3M` | 3개월 수익률 |
-| `Perf.6M` | 6개월 수익률 |
-| `Perf.Y` | 연간 수익률 |
-
----
-
-## 🔧 col() 함수 사용법
-
-```python
-from tradingview_screener import col
-
-# 비교 연산
-col('volume') > 1_000_000              # 거래량 100만 초과
-col('change') >= 5                     # 변동률 5% 이상
-col('RSI') < 30                        # RSI 30 미만
-
-# 범위 조건
-col('market_cap_basic').between(1_000_000_000, 10_000_000_000)  # 시총 10~100억 달러
-
-# 컬럼 간 비교
-col('MACD.macd') >= col('MACD.signal')  # MACD가 시그널보다 높음
-
-# 동일 조건
-col('is_primary') == True               # Primary 종목만
-```
 
 ---
 
@@ -332,6 +282,16 @@ col('is_primary') == True               # Primary 종목만
 ## 📋 출력 예시
 
 ```
+======================================================================
+🚀 Market Lens AI - 전체 파이프라인 실행
+======================================================================
+⏰ 시작 시간: 2025-12-07 15:30:00
+📊 전략당 분석 종목 수: 1
+======================================================================
+
+======================================================================
+📊 [1/3] 스크리닝 시작
+======================================================================
 📊 스크리닝 시작...
 ------------------------------------------------------------
   • Cyclical (경기민감형): 10개 중 5개 필터링됨
@@ -339,46 +299,37 @@ col('is_primary') == True               # Primary 종목만
   • Finance (금융/자산주): 5개 중 3개 필터링됨
   • Defensive (경기방어주): 50개 중 8개 필터링됨
 ------------------------------------------------------------
-============================================================
-📊 4가지 투자 전략 스크리닝 결과 요약
-============================================================
-  • Cyclical (경기민감형): 5개 종목
-  • Growth (고성장형): 12개 종목
-  • Finance (금융/자산주): 3개 종목
-  • Defensive (경기방어주): 8개 종목
-============================================================
 
-📁 결과 저장 중...
-📂 출력 디렉토리: output/20251204_151234
-  ✅ 저장: output/20251204_151234/global_cyclical.csv
-  ✅ 저장: output/20251204_151234/global_growth.csv
-  ✅ 저장: output/20251204_151234/global_finance.csv
-  ✅ 저장: output/20251204_151234/global_defensive.csv
-```
+======================================================================
+🤖 [2/3] LLM 종목 분석 시작
+======================================================================
+...
 
-### 출력 디렉토리 구조
+======================================================================
+🎯 [3/3] 포트폴리오 추천 생성 시작
+======================================================================
+...
 
-```
-output/
-├── 20251204_151234/          # 첫 번째 실행
-│   ├── global_cyclical.csv
-│   ├── global_growth.csv
-│   ├── global_finance.csv
-│   └── global_defensive.csv
-├── 20251204_160000/          # 두 번째 실행
-│   ├── global_cyclical.csv
-│   └── ...
-└── ...
+======================================================================
+✅ 파이프라인 실행 완료!
+======================================================================
+⏱️ 총 소요 시간: 0:05:32.123456
+
+📁 결과 파일 위치:
+   • 스크리닝: output/screener/20251207
+   • 분석:     output/analyzer/20251207
+   • 포트폴리오: output/portfolio/20251207
+======================================================================
 ```
 
 ---
 
 ## ⚠️ 주의사항
 
-1. **API 제한**: TradingView API에는 요청 제한이 있을 수 있습니다.
-2. **데이터 지연**: 실시간 데이터가 아닌 지연된 데이터일 수 있습니다.
-3. **필드 가용성**: 모든 필드가 모든 종목에서 사용 가능한 것은 아닙니다.
-4. **투자 조언 아님**: 본 스크리너는 참고용이며, 투자 결정에 대한 책임은 투자자 본인에게 있습니다.
+1. **API 키 필수**: Gemini API 키가 필요합니다 (`.env` 파일 또는 환경 변수 설정)
+2. **API 제한**: TradingView 및 Gemini API에는 요청 제한이 있을 수 있습니다
+3. **데이터 지연**: 실시간 데이터가 아닌 지연된 데이터일 수 있습니다
+4. **투자 조언 아님**: 본 도구는 참고용이며, 투자 결정에 대한 책임은 투자자 본인에게 있습니다
 
 ---
 

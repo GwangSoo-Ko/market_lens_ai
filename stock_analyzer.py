@@ -1,16 +1,23 @@
 """
 Stock Analyzer - LLM 기반 주식 종합 분석 및 투자 조언 보고서 생성기
 
-Gemini API를 활용하여 스크리닝된 종목들에 대한 심층 분석 및 투자 조언 보고서를 생성합니다.
+Gemini API를 활용하여 스크리닝된 종목들에 대한 심층 분석 보고서를 생성합니다.
+- 입력: output/screener/{timestamp}/ (스크리닝 CSV 결과)
+- 출력: output/analyzer/{timestamp}/ (분석 MD 보고서)
 
 Usage:
-    python stock_analyzer.py                    # 가장 최근 output 폴더 분석
-    python stock_analyzer.py output/20251204_151114  # 특정 폴더 분석
+    python stock_analyzer.py                                      # 가장 최근 screener 결과 분석
+    python stock_analyzer.py output/screener/20251204_151114      # 특정 screener 폴더 분석
+    python stock_analyzer.py -m 3                                 # 전략당 3개 종목 분석
     
     또는 모듈로 임포트:
     from stock_analyzer import StockAnalyzer
     analyzer = StockAnalyzer()
-    analyzer.run_analysis('output/20251204_151114')
+    analyzer.run_analysis('output/screener/20251204_151114')
+
+Note:
+    최종 추천 보고서는 portfolio_maker.py를 사용하세요:
+    python portfolio_maker.py output/analyzer/20251204_151114
 
 Environment Variables:
     GOOGLE_API_KEY 또는 GEMINI_API_KEY: Gemini API 키
@@ -49,6 +56,8 @@ except ImportError:
 # =============================================================================
 
 OUTPUT_BASE_DIR = 'output'
+SCREENER_OUTPUT_DIR = 'output/screener'  # 스크리닝 결과 읽기 경로
+ANALYZER_OUTPUT_DIR = 'output/analyzer'  # 분석 결과 저장 경로
 
 # 전략별 한글명 및 설명
 STRATEGY_INFO = {
@@ -461,18 +470,20 @@ class StockAnalyzer:
     
     def run_analysis(
         self, 
-        output_dir: str,
-        max_stocks_per_strategy: int = 5
-    ) -> Dict[str, List[Dict]]:
+        screener_dir: str,
+        max_stocks_per_strategy: int = 5,
+        analyzer_output_dir: str = None
+    ) -> Tuple[Dict[str, List[Dict]], str]:
         """
         전체 분석 실행
         
         Parameters:
-            output_dir: 스크리닝 결과 디렉토리
+            screener_dir: 스크리닝 결과 디렉토리 (output/screener/{timestamp})
             max_stocks_per_strategy: 전략당 최대 분석 종목 수
+            analyzer_output_dir: 분석 결과 저장 디렉토리 (None이면 자동 생성)
             
         Returns:
-            전략별 분석 결과 딕셔너리
+            (전략별 분석 결과 딕셔너리, 분석 결과 저장 디렉토리)
         """
         print("=" * 60)
         print("🤖 LLM 기반 주식 종합 분석 시작")
@@ -480,40 +491,48 @@ class StockAnalyzer:
         print("=" * 60)
         
         # 1. 스크리닝 결과 로드
-        print("\n📂 스크리닝 결과 로드 중...")
-        screening_results = self.load_screening_results(output_dir)
+        print(f"\n📂 스크리닝 결과 로드 중... ({screener_dir})")
+        screening_results = self.load_screening_results(screener_dir)
         
         if not screening_results:
             print("❌ 분석할 종목이 없습니다.")
-            return {}
+            return {}, ""
         
-        # 2. 전략별 분석
+        # 2. 분석 결과 저장 디렉토리 생성
+        if analyzer_output_dir is None:
+            analyzer_output_dir = create_analyzer_output_dir()
+        else:
+            os.makedirs(analyzer_output_dir, exist_ok=True)
+        
+        print(f"📁 분석 결과 저장 경로: {analyzer_output_dir}")
+        
+        # 3. 전략별 분석
         all_analyses = {}
         
         for strategy, df in screening_results.items():
             analyses = self.analyze_strategy(df, strategy, max_stocks_per_strategy)
             all_analyses[strategy] = analyses
         
-        # 3. 보고서 저장
+        # 4. 보고서 저장
         print("\n📝 보고서 생성 및 저장 중...")
-        self.save_reports(all_analyses, output_dir)
+        self.save_reports(all_analyses, analyzer_output_dir)
         
-        # 4. 완료 메시지
+        # 5. 완료 메시지
         total_analyzed = sum(len(a) for a in all_analyses.values())
         print("\n" + "=" * 60)
         print(f"✅ 분석 완료! 총 {total_analyzed}개 종목 분석됨")
-        print(f"📁 보고서 위치: {output_dir}")
+        print(f"📁 보고서 위치: {analyzer_output_dir}")
         print("=" * 60)
         
-        return all_analyses
+        return all_analyses, analyzer_output_dir
 
 
 # =============================================================================
 # 유틸리티 함수
 # =============================================================================
 
-def get_latest_output_dir(base_dir: str = OUTPUT_BASE_DIR) -> Optional[str]:
-    """가장 최근 output 디렉토리 반환"""
+def get_latest_screener_dir(base_dir: str = SCREENER_OUTPUT_DIR) -> Optional[str]:
+    """가장 최근 screener 결과 디렉토리 반환"""
     if not os.path.exists(base_dir):
         return None
     
@@ -531,29 +550,95 @@ def get_latest_output_dir(base_dir: str = OUTPUT_BASE_DIR) -> Optional[str]:
     return subdirs[0]
 
 
+def create_analyzer_output_dir(base_dir: str = ANALYZER_OUTPUT_DIR) -> str:
+    """
+    날짜 기반 분석 결과 출력 디렉토리 생성
+    
+    Parameters:
+        base_dir: 기본 출력 디렉토리
+        
+    Returns:
+        생성된 디렉토리 경로 (output/analyzer/{YYYYMMDD})
+    """
+    date_str = datetime.now().strftime('%Y%m%d')
+    output_dir = os.path.join(base_dir, date_str)
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir
+
+
 # =============================================================================
 # 메인 실행
 # =============================================================================
 
 def main():
-    """메인 실행 함수"""
-    # 명령행 인자로 output 디렉토리 지정 가능
-    if len(sys.argv) > 1:
-        output_dir = sys.argv[1]
-    else:
-        output_dir = get_latest_output_dir()
+    """
+    메인 실행 함수
     
-    if not output_dir or not os.path.exists(output_dir):
+    Usage:
+        python stock_analyzer.py                                    # 가장 최근 screener 결과 분석
+        python stock_analyzer.py output/screener/20251204_151114    # 특정 screener 폴더 분석
+    
+    Note:
+        최종 추천 보고서는 portfolio_maker.py를 사용하세요.
+    """
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='LLM 기반 주식 종합 분석 및 투자 조언 보고서 생성기',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python stock_analyzer.py                                    # 가장 최근 screener 결과 분석
+  python stock_analyzer.py output/screener/20251204_151114    # 특정 screener 폴더 분석
+  python stock_analyzer.py -m 3                               # 전략당 3개 종목 분석
+
+Directory Structure:
+  입력: output/screener/{timestamp}/  (스크리닝 CSV 결과)
+  출력: output/analyzer/{timestamp}/  (분석 MD 보고서)
+
+Note:
+  최종 추천 보고서는 portfolio_maker.py를 사용하세요:
+  python portfolio_maker.py output/analyzer/20251204_151114
+        """
+    )
+    parser.add_argument(
+        'screener_dir', 
+        nargs='?', 
+        default=None,
+        help='분석할 스크리닝 결과 디렉토리 (기본값: 가장 최근 output/screener 폴더)'
+    )
+    parser.add_argument(
+        '--max-stocks', '-m',
+        type=int,
+        default=1,
+        help='전략당 최대 분석 종목 수 (기본값: 1)'
+    )
+    
+    args = parser.parse_args()
+    
+    # screener 디렉토리 결정
+    screener_dir = args.screener_dir or get_latest_screener_dir()
+    
+    if not screener_dir or not os.path.exists(screener_dir):
         print("❌ 분석할 스크리닝 결과 디렉토리를 찾을 수 없습니다.")
-        print("   사용법: python stock_analyzer.py [output_directory]")
-        print("   예시: python stock_analyzer.py output/20251204_151114")
+        print("   사용법: python stock_analyzer.py [screener_directory]")
+        print("   예시: python stock_analyzer.py output/screener/20251204_151114")
+        print(f"\n   힌트: 먼저 python stock_screener.py를 실행하여 스크리닝 결과를 생성하세요.")
         sys.exit(1)
     
-    print(f"📂 분석 대상 디렉토리: {output_dir}")
+    print(f"📂 스크리닝 결과 디렉토리: {screener_dir}")
     
     try:
         analyzer = StockAnalyzer()
-        analyzer.run_analysis(output_dir, max_stocks_per_strategy=1)
+        _, analyzer_output_dir = analyzer.run_analysis(
+            screener_dir, 
+            max_stocks_per_strategy=args.max_stocks
+        )
+        
+        if analyzer_output_dir:
+            print(f"\n💡 포트폴리오 추천을 생성하려면:")
+            print(f"   python portfolio_maker.py {analyzer_output_dir}")
+            
     except ValueError as e:
         print(f"❌ 오류: {e}")
         sys.exit(1)

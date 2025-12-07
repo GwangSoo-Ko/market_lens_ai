@@ -27,6 +27,7 @@ from tradingview_screener import Query, col
 # =============================================================================
 
 OUTPUT_BASE_DIR = 'output'
+SCREENER_OUTPUT_DIR = 'output/screener'
 
 
 # =============================================================================
@@ -464,18 +465,18 @@ def run_all_screeners(
     return results
 
 
-def create_output_dir(base_dir: str = OUTPUT_BASE_DIR) -> str:
+def create_output_dir(base_dir: str = SCREENER_OUTPUT_DIR) -> str:
     """
-    타임스탬프 기반 출력 디렉토리 생성
+    날짜 기반 출력 디렉토리 생성
     
     Parameters:
         base_dir: 기본 출력 디렉토리
         
     Returns:
-        생성된 디렉토리 경로 (output/{timestamp})
+        생성된 디렉토리 경로 (output/screener/{YYYYMMDD})
     """
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = os.path.join(base_dir, timestamp)
+    date_str = datetime.now().strftime('%Y%m%d')
+    output_dir = os.path.join(base_dir, date_str)
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
 
