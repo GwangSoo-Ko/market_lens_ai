@@ -62,6 +62,12 @@ INPUT_REPORT_FILENAME = 'investment_report.md'
 # 최종 추천 보고서 파일명
 FINAL_RECOMMENDATION_FILENAME = 'final_recommendation.md'
 
+# 시장 정보
+MARKET_INFO = {
+    'us': {'name': '미국', 'currency': 'USD'},
+    'kr': {'name': '한국', 'currency': 'KRW'},
+}
+
 
 # =============================================================================
 # PortfolioMaker 클래스
@@ -328,6 +334,83 @@ class PortfolioMaker:
             # 업로드된 파일 정리
             if uploaded_file:
                 self._delete_file(uploaded_file)
+    
+    def generate_all_recommendations(
+        self, 
+        analyzer_dir: str, 
+        use_file_upload: bool = True,
+        portfolio_output_dir: str = None
+    ) -> tuple[dict, str]:
+        """
+        모든 시장별 투자 보고서에 대한 최종 추천 생성
+        
+        Parameters:
+            analyzer_dir: 분석 보고서가 저장된 디렉토리 경로 (output/analyzer/{timestamp})
+            use_file_upload: True면 파일 업로드 방식, False면 텍스트 삽입 방식
+            portfolio_output_dir: 포트폴리오 결과 저장 디렉토리 (None이면 자동 생성)
+            
+        Returns:
+            (시장별 결과 딕셔너리, 저장 디렉토리)
+        """
+        import glob
+        
+        # 포트폴리오 출력 디렉토리 생성
+        if portfolio_output_dir is None:
+            portfolio_output_dir = create_portfolio_output_dir()
+        else:
+            os.makedirs(portfolio_output_dir, exist_ok=True)
+        
+        # investment_report.md 파일들 찾기
+        report_files = glob.glob(os.path.join(analyzer_dir, '*investment_report.md'))
+        
+        if not report_files:
+            print(f"❌ 분석 보고서를 찾을 수 없습니다: {analyzer_dir}")
+            return {}, ""
+        
+        results = {}
+        
+        for report_file in report_files:
+            filename = os.path.basename(report_file)
+            
+            # 시장 코드 추출 (us_investment_report.md -> us)
+            market = None
+            for m in MARKET_INFO.keys():
+                if filename.startswith(f'{m}_'):
+                    market = m
+                    break
+            
+            # 시장 코드가 없으면 기본 파일 (단일 시장으로 간주)
+            if market is None and filename == INPUT_REPORT_FILENAME:
+                market = 'default'
+            elif market is None:
+                continue
+            
+            market_info = MARKET_INFO.get(market, {})
+            market_name = market_info.get('name', market)
+            
+            print(f"\n{'='*60}")
+            print(f"🎯 [{market_name}] 최종 추천 보고서 생성")
+            print(f"{'='*60}")
+            
+            # 출력 파일명 설정
+            if market == 'default':
+                output_filename = FINAL_RECOMMENDATION_FILENAME
+            else:
+                output_filename = f'{market}_{FINAL_RECOMMENDATION_FILENAME}'
+            
+            # 추천 생성
+            result, _ = self.generate_recommendation(
+                analyzer_dir=analyzer_dir,
+                use_file_upload=use_file_upload,
+                input_filename=filename,
+                output_filename=output_filename,
+                portfolio_output_dir=portfolio_output_dir
+            )
+            
+            if result:
+                results[market] = result
+        
+        return results, portfolio_output_dir
 
 
 # =============================================================================
@@ -378,24 +461,29 @@ def main():
     메인 실행 함수
     
     Usage:
-        python portfolio_maker.py                                   # 가장 최근 analyzer 결과 분석
+        python portfolio_maker.py                                   # 가장 최근 analyzer 결과의 모든 시장 분석
         python portfolio_maker.py output/analyzer/20251204_151114   # 특정 analyzer 폴더 분석
         python portfolio_maker.py --text-mode                       # 텍스트 삽입 방식으로 분석
     """
     import argparse
+    import glob as glob_module
     
     parser = argparse.ArgumentParser(
         description='LLM 기반 최종 투자 추천 및 포트폴리오 전략 보고서 생성기',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python portfolio_maker.py                                   # 가장 최근 analyzer 결과 분석
+  python portfolio_maker.py                                   # 가장 최근 analyzer 결과의 모든 시장 분석
   python portfolio_maker.py output/analyzer/20251204_151114   # 특정 analyzer 폴더 분석
   python portfolio_maker.py --text-mode                       # 텍스트 삽입 방식으로 분석
 
 Directory Structure:
   입력: output/analyzer/{timestamp}/  (분석 MD 보고서)
+         - us_investment_report.md (미국)
+         - kr_investment_report.md (한국)
   출력: output/portfolio/{timestamp}/ (포트폴리오 추천 보고서)
+         - us_final_recommendation.md (미국)
+         - kr_final_recommendation.md (한국)
         """
     )
     parser.add_argument(
@@ -408,18 +496,6 @@ Directory Structure:
         '--text-mode', '-t',
         action='store_true',
         help='텍스트 삽입 방식으로 분석 (기본값: 파일 업로드 방식)'
-    )
-    parser.add_argument(
-        '--input', '-i',
-        type=str,
-        default=INPUT_REPORT_FILENAME,
-        help=f'입력 보고서 파일명 (기본값: {INPUT_REPORT_FILENAME})'
-    )
-    parser.add_argument(
-        '--output', '-o',
-        type=str,
-        default=FINAL_RECOMMENDATION_FILENAME,
-        help=f'출력 보고서 파일명 (기본값: {FINAL_RECOMMENDATION_FILENAME})'
     )
     parser.add_argument(
         '--model',
@@ -440,12 +516,16 @@ Directory Structure:
         print(f"\n   힌트: 먼저 python stock_analyzer.py를 실행하여 분석 보고서를 생성하세요.")
         sys.exit(1)
     
+    # 분석할 보고서 파일 확인
+    report_files = glob_module.glob(os.path.join(analyzer_dir, '*investment_report.md'))
+    
     print("=" * 60)
     print("🎯 포트폴리오 추천 보고서 생성기")
     print("=" * 60)
     print(f"📂 분석 보고서 디렉토리: {analyzer_dir}")
-    print(f"📄 입력 파일: {args.input}")
-    print(f"📝 출력 파일: {args.output}")
+    print(f"📄 발견된 보고서: {len(report_files)}개")
+    for f in report_files:
+        print(f"   - {os.path.basename(f)}")
     print(f"🤖 모델: {args.model}")
     print(f"📎 분석 방식: {'텍스트 삽입' if args.text_mode else '파일 업로드'}")
     print("=" * 60)
@@ -453,17 +533,24 @@ Directory Structure:
     try:
         maker = PortfolioMaker(model=args.model)
         
-        result, portfolio_output_dir = maker.generate_recommendation(
+        # 모든 시장의 보고서 처리
+        results, portfolio_output_dir = maker.generate_all_recommendations(
             analyzer_dir,
-            use_file_upload=not args.text_mode,
-            input_filename=args.input,
-            output_filename=args.output
+            use_file_upload=not args.text_mode
         )
         
-        if result and portfolio_output_dir:
+        if results and portfolio_output_dir:
             print("\n" + "=" * 60)
             print("✅ 최종 추천 보고서 생성 완료!")
-            print(f"📁 보고서 위치: {os.path.join(portfolio_output_dir, args.output)}")
+            print(f"📁 보고서 위치: {portfolio_output_dir}")
+            for market in results.keys():
+                market_info = MARKET_INFO.get(market, {})
+                market_name = market_info.get('name', market)
+                if market == 'default':
+                    filename = FINAL_RECOMMENDATION_FILENAME
+                else:
+                    filename = f'{market}_{FINAL_RECOMMENDATION_FILENAME}'
+                print(f"   - [{market_name}] {filename}")
             print("=" * 60)
         else:
             print("❌ 최종 추천 보고서 생성 실패")

@@ -59,6 +59,12 @@ OUTPUT_BASE_DIR = 'output'
 SCREENER_OUTPUT_DIR = 'output/screener'  # 스크리닝 결과 읽기 경로
 ANALYZER_OUTPUT_DIR = 'output/analyzer'  # 분석 결과 저장 경로
 
+# 시장 정보
+MARKET_INFO = {
+    'us': {'name': '미국', 'currency': 'USD'},
+    'kr': {'name': '한국', 'currency': 'KRW'},
+}
+
 # 전략별 한글명 및 설명
 STRATEGY_INFO = {
     'cyclical': {
@@ -127,31 +133,50 @@ class StockAnalyzer:
         
         return genai.Client(api_key=api_key)
     
-    def load_screening_results(self, output_dir: str) -> Dict[str, pd.DataFrame]:
+    def load_screening_results(self, output_dir: str) -> Dict[str, Dict[str, pd.DataFrame]]:
         """
-        스크리닝 결과 CSV 파일들 로드
+        스크리닝 결과 CSV 파일들 로드 (시장별로 분리)
         
         Parameters:
             output_dir: 스크리닝 결과가 저장된 디렉토리 경로
             
         Returns:
-            전략명을 키로 하는 DataFrame 딕셔너리
+            시장별 > 전략별 DataFrame 딕셔너리
+            예: {'us': {'growth': df, ...}, 'kr': {'growth': df, ...}}
         """
-        results = {}
+        results = {}  # {market: {strategy: df}}
         
         # CSV 파일 패턴 매칭
         csv_files = glob.glob(os.path.join(output_dir, '*.csv'))
         
         for csv_file in csv_files:
             filename = os.path.basename(csv_file)
+            filename_lower = filename.lower()
             
-            # 파일명에서 전략명 추출 (예: global_growth.csv -> growth)
+            # 파일명에서 시장 코드와 전략명 추출 (예: us_growth.csv -> us, growth)
+            market = None
+            for m in MARKET_INFO.keys():
+                if filename_lower.startswith(f'{m}_'):
+                    market = m
+                    break
+            
+            # 시장 코드가 없으면 기존 global_ 형식으로 간주 (us로 처리)
+            if market is None:
+                if filename_lower.startswith('global_'):
+                    market = 'us'
+                else:
+                    continue
+            
+            # 전략명 추출
             for strategy in STRATEGY_INFO.keys():
-                if strategy in filename.lower():
+                if strategy in filename_lower:
                     df = pd.read_csv(csv_file)
                     if not df.empty:
-                        results[strategy] = df
-                        print(f"  ✅ {strategy}: {len(df)}개 종목 로드됨")
+                        if market not in results:
+                            results[market] = {}
+                        results[market][strategy] = df
+                        market_name = MARKET_INFO.get(market, {}).get('name', market)
+                        print(f"  ✅ [{market_name}] {strategy}: {len(df)}개 종목 로드됨")
                     break
         
         return results
@@ -353,20 +378,30 @@ class StockAnalyzer:
     def generate_strategy_report(
         self, 
         analyses: List[Dict], 
-        strategy: str
+        strategy: str,
+        market: str = None
     ) -> str:
         """전략별 보고서 생성"""
         strategy_info = STRATEGY_INFO.get(strategy, {})
+        market_info = MARKET_INFO.get(market, {})
+        market_name = market_info.get('name', '')
+        market_suffix = f" ({market_name})" if market_name else ""
         
         report_parts = [
-            f"# {strategy_info.get('name', strategy)} 투자 분석 보고서",
+            f"# {strategy_info.get('name', strategy)} 투자 분석 보고서{market_suffix}",
             f"\n> 생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+        
+        if market_name:
+            report_parts.append(f"> 시장: {market_name}")
+        
+        report_parts.extend([
             f"\n## 전략 개요",
             f"- **목표**: {strategy_info.get('description', '')}",
             f"- **핵심 지표**: {strategy_info.get('focus', '')}",
             f"- **분석 종목 수**: {len(analyses)}개",
             "\n---\n",
-        ]
+        ])
         
         for idx, item in enumerate(analyses, 1):
             report_parts.extend([
@@ -382,15 +417,26 @@ class StockAnalyzer:
     
     def generate_summary_report(
         self, 
-        all_analyses: Dict[str, List[Dict]]
+        all_analyses: Dict[str, List[Dict]],
+        market: str = None
     ) -> str:
-        """전체 종합 보고서 생성"""
+        """시장별 종합 보고서 생성"""
+        market_info = MARKET_INFO.get(market, {})
+        market_name = market_info.get('name', '')
+        market_suffix = f" ({market_name})" if market_name else ""
+        
         report_parts = [
-            "# 📈 투자 종합 분석 보고서",
+            f"# 📈 투자 종합 분석 보고서{market_suffix}",
             f"\n> 생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+        
+        if market_name:
+            report_parts.append(f"> 시장: {market_name}")
+        
+        report_parts.extend([
             "",
             "## 목차",
-        ]
+        ])
         
         # 목차 생성
         for strategy, analyses in all_analyses.items():
@@ -438,16 +484,23 @@ class StockAnalyzer:
     def save_reports(
         self, 
         all_analyses: Dict[str, List[Dict]],
-        output_dir: str
+        output_dir: str,
+        market: str = None
     ) -> List[str]:
-        """보고서 저장"""
+        """보고서 저장 (시장별)"""
         saved_files = []
+        market_prefix = f'{market}_' if market else ''
+        market_info = MARKET_INFO.get(market, {})
+        market_name = market_info.get('name', '')
+        
+        if market_name:
+            print(f"\n📝 [{market_name}] 보고서 저장 중...")
         
         # 전략별 보고서 저장
         for strategy, analyses in all_analyses.items():
             if analyses:
-                report = self.generate_strategy_report(analyses, strategy)
-                filename = os.path.join(output_dir, f'analysis_{strategy}.md')
+                report = self.generate_strategy_report(analyses, strategy, market)
+                filename = os.path.join(output_dir, f'analysis_{market_prefix}{strategy}.md')
                 
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(report)
@@ -455,10 +508,10 @@ class StockAnalyzer:
                 saved_files.append(filename)
                 print(f"  ✅ 저장: {filename}")
         
-        # 종합 보고서 저장
+        # 시장별 종합 보고서 저장
         if any(all_analyses.values()):
-            summary_report = self.generate_summary_report(all_analyses)
-            summary_filename = os.path.join(output_dir, 'investment_report.md')
+            summary_report = self.generate_summary_report(all_analyses, market)
+            summary_filename = os.path.join(output_dir, f'{market_prefix}investment_report.md')
             
             with open(summary_filename, 'w', encoding='utf-8') as f:
                 f.write(summary_report)
@@ -473,9 +526,9 @@ class StockAnalyzer:
         screener_dir: str,
         max_stocks_per_strategy: int = 5,
         analyzer_output_dir: str = None
-    ) -> Tuple[Dict[str, List[Dict]], str]:
+    ) -> Tuple[Dict[str, Dict[str, List[Dict]]], str]:
         """
-        전체 분석 실행
+        전체 분석 실행 (시장별로 분리)
         
         Parameters:
             screener_dir: 스크리닝 결과 디렉토리 (output/screener/{timestamp})
@@ -483,14 +536,15 @@ class StockAnalyzer:
             analyzer_output_dir: 분석 결과 저장 디렉토리 (None이면 자동 생성)
             
         Returns:
-            (전략별 분석 결과 딕셔너리, 분석 결과 저장 디렉토리)
+            (시장별 > 전략별 분석 결과 딕셔너리, 분석 결과 저장 디렉토리)
+            예: {'us': {'growth': [...]}, 'kr': {'growth': [...]}}
         """
         print("=" * 60)
         print("🤖 LLM 기반 주식 종합 분석 시작")
         print(f"   모델: {self.model}")
         print("=" * 60)
         
-        # 1. 스크리닝 결과 로드
+        # 1. 스크리닝 결과 로드 (시장별로 분리)
         print(f"\n📂 스크리닝 결과 로드 중... ({screener_dir})")
         screening_results = self.load_screening_results(screener_dir)
         
@@ -506,25 +560,45 @@ class StockAnalyzer:
         
         print(f"📁 분석 결과 저장 경로: {analyzer_output_dir}")
         
-        # 3. 전략별 분석
-        all_analyses = {}
+        # 3. 시장별 > 전략별 분석
+        all_market_analyses = {}  # {market: {strategy: [analyses]}}
+        total_analyzed = 0
         
-        for strategy, df in screening_results.items():
-            analyses = self.analyze_strategy(df, strategy, max_stocks_per_strategy)
-            all_analyses[strategy] = analyses
+        for market, strategies in screening_results.items():
+            market_info = MARKET_INFO.get(market, {})
+            market_name = market_info.get('name', market)
+            
+            print(f"\n{'='*60}")
+            print(f"🌍 [{market_name}] 시장 분석 시작")
+            print(f"{'='*60}")
+            
+            market_analyses = {}
+            
+            for strategy, df in strategies.items():
+                strategy_info = STRATEGY_INFO.get(strategy, {})
+                print(f"\n📊 [{market_name}] {strategy_info.get('name', strategy)} 전략 분석...")
+                
+                analyses = self.analyze_strategy(df, strategy, max_stocks_per_strategy)
+                market_analyses[strategy] = analyses
+                total_analyzed += len(analyses)
+            
+            all_market_analyses[market] = market_analyses
+            
+            # 시장별 보고서 저장
+            self.save_reports(market_analyses, analyzer_output_dir, market)
         
-        # 4. 보고서 저장
-        print("\n📝 보고서 생성 및 저장 중...")
-        self.save_reports(all_analyses, analyzer_output_dir)
-        
-        # 5. 완료 메시지
-        total_analyzed = sum(len(a) for a in all_analyses.values())
+        # 4. 완료 메시지
         print("\n" + "=" * 60)
         print(f"✅ 분석 완료! 총 {total_analyzed}개 종목 분석됨")
+        for market, analyses in all_market_analyses.items():
+            market_info = MARKET_INFO.get(market, {})
+            market_name = market_info.get('name', market)
+            market_count = sum(len(a) for a in analyses.values())
+            print(f"   • {market_name}: {market_count}개 종목")
         print(f"📁 보고서 위치: {analyzer_output_dir}")
         print("=" * 60)
         
-        return all_analyses, analyzer_output_dir
+        return all_market_analyses, analyzer_output_dir
 
 
 # =============================================================================
