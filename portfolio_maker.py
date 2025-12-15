@@ -54,7 +54,7 @@ ANALYZER_OUTPUT_DIR = 'output/analyzer'   # 분석 결과 읽기 경로
 PORTFOLIO_OUTPUT_DIR = 'output/portfolio' # 포트폴리오 결과 저장 경로
 
 # 기본 Gemini 모델
-DEFAULT_MODEL = 'gemini-3-pro-preview'
+DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
 # 입력 보고서 파일명
 INPUT_REPORT_FILENAME = 'investment_report.md'
