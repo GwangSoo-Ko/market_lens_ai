@@ -205,6 +205,33 @@ class PortfolioMaker:
                 print(f"  🗑️ 업로드된 파일 정리 완료")
         except Exception:
             pass  # 삭제 실패해도 무시
+
+    def _extract_text_from_response(self, response: object) -> str:
+        """
+        google-genai 응답에서 텍스트만 안전하게 추출.
+        response.text는 비텍스트 파트(thought_signature 등)가 섞이면 경고를 출력할 수 있어,
+        candidates.content.parts[*].text를 직접 join하여 경고를 방지한다.
+        """
+        try:
+            candidates = getattr(response, 'candidates', None) or []
+            for cand in candidates:
+                content = getattr(cand, 'content', None)
+                parts = getattr(content, 'parts', None) or []
+                texts = []
+                for part in parts:
+                    text = getattr(part, 'text', None)
+                    if text:
+                        texts.append(text)
+                if texts:
+                    return '\n'.join(texts).strip()
+        except Exception:
+            pass
+
+        # 최후 fallback (경고 없이 문자열화)
+        try:
+            return str(response)
+        except Exception:
+            return ""
     
     def generate_recommendation(
         self, 
@@ -296,7 +323,7 @@ class PortfolioMaker:
                     )
                 )
             
-            recommendation_text = response.text
+            recommendation_text = self._extract_text_from_response(response)
             
             # 보고서에 헤더 추가
             final_report = f"""# 🎯 최종 투자 추천 및 포트폴리오 전략 보고서

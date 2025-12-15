@@ -286,6 +286,11 @@ def screen_cyclical(
         .limit(limit)
         .get_scanner_data()
     )
+
+    # downstream(analyzer/yfinance)은 ticker 컬럼을 기대하므로, 없으면 name을 ticker로 사용
+    if not df.empty and 'ticker' not in df.columns and 'name' in df.columns:
+        df = df.copy()
+        df['ticker'] = df['name']
     
     # 애널리스트 점수 계산 및 필터링
     df = calculate_analyst_score(df)
@@ -352,6 +357,11 @@ def screen_growth(
         .limit(limit)
         .get_scanner_data()
     )
+
+    # downstream(analyzer/yfinance)은 ticker 컬럼을 기대하므로, 없으면 name을 ticker로 사용
+    if not df.empty and 'ticker' not in df.columns and 'name' in df.columns:
+        df = df.copy()
+        df['ticker'] = df['name']
     
     # 애널리스트 점수 계산 및 필터링
     df = calculate_analyst_score(df)
@@ -417,6 +427,11 @@ def screen_finance(
         .limit(limit)
         .get_scanner_data()
     )
+
+    # downstream(analyzer/yfinance)은 ticker 컬럼을 기대하므로, 없으면 name을 ticker로 사용
+    if not df.empty and 'ticker' not in df.columns and 'name' in df.columns:
+        df = df.copy()
+        df['ticker'] = df['name']
     
     # 애널리스트 점수 계산 및 필터링
     df = calculate_analyst_score(df)
@@ -481,6 +496,11 @@ def screen_defensive(
         .limit(limit)
         .get_scanner_data()
     )
+
+    # downstream(analyzer/yfinance)은 ticker 컬럼을 기대하므로, 없으면 name을 ticker로 사용
+    if not df.empty and 'ticker' not in df.columns and 'name' in df.columns:
+        df = df.copy()
+        df['ticker'] = df['name']
     
     # 애널리스트 점수 계산 및 필터링
     df = calculate_analyst_score(df)

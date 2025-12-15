@@ -7,7 +7,7 @@ TradingView Screener와 Gemini AI를 활용하여 **스크리닝 → 심층 분�
 | 단계 | 스크립트 | 설명 |
 |------|----------|------|
 | 1️⃣ | `stock_screener.py` | 4가지 투자 전략 기반 글로벌 종목 스크리닝 |
-| 2️⃣ | `stock_analyzer.py` | Gemini AI를 활용한 종목별 심층 분석 보고서 생성 |
+| 2️⃣ | `stock_analyzer.py` | **yfinance + TA-Lib 기반 근거 데이터(CSV) 생성 후** Gemini AI로 종목별 심층 분석 보고서 생성 (파일 첨부 분석) |
 | 3️⃣ | `portfolio_maker.py` | 최종 추천 종목 및 포트폴리오 예산 분배 전략 제시 |
 | 🚀 | `live_process.py` | 1→2→3 전체 파이프라인 자동 실행 |
 
@@ -69,6 +69,22 @@ TradingView Screener와 Gemini AI를 활용하여 **스크리닝 → 심층 분�
 pip install -r requirements.txt
 ```
 
+### 1-1. (선택/권장) TA-Lib 시스템 라이브러리 설치
+
+`ta-lib`(Python 패키지)는 내부적으로 TA-Lib C 라이브러리를 사용합니다. 설치가 실패하면 아래를 먼저 진행하세요.
+
+- macOS(Homebrew):
+
+```bash
+brew install ta-lib
+```
+
+- Conda(대안):
+
+```bash
+conda install -c conda-forge libta-lib
+```
+
 ### 2. 환경 변수 설정
 
 Gemini API 키를 `.env` 파일에 설정하세요:
@@ -92,6 +108,8 @@ export GOOGLE_API_KEY="your_api_key_here"
 | google-genai | >= 1.0.0 | Gemini AI API |
 | pandas | >= 2.0.0 | 데이터 분석 |
 | python-dotenv | >= 1.0.0 | 환경 변수 관리 |
+| yfinance | >= 0.2.40 | Yahoo Finance 기반 OHLCV/재무 데이터 수집 |
+| ta-lib | >= 0.6.4 | 기술적 지표 계산(SMA/RSI/MACD/ADX 등) |
 
 ---
 
@@ -111,20 +129,32 @@ market_lens_ai/
 └── output/                   # 결과 저장 디렉토리
     ├── screener/             # 스크리닝 결과 (CSV)
     │   └── {YYYYMMDD}/
-    │       ├── global_cyclical.csv
-    │       ├── global_growth.csv
-    │       ├── global_finance.csv
-    │       └── global_defensive.csv
+    │       ├── kr_cyclical.csv
+    │       ├── kr_growth.csv
+    │       ├── kr_finance.csv
+    │       ├── kr_defensive.csv
+    │       ├── us_growth.csv
+    │       └── us_defensive.csv
+    ├── market_data/          # 근거 데이터 (CSV, yfinance 기반)
+    │   └── {YYYYMMDD}/
+    │       ├── prices/
+    │       │   └── *_ohlcv_1y_ta.csv
+    │       └── financials/
+    │           └── *_financials_5y_ttm.csv
     ├── analyzer/             # 분석 보고서 (MD)
     │   └── {YYYYMMDD}/
-    │       ├── analysis_cyclical.md
-    │       ├── analysis_growth.md
-    │       ├── analysis_finance.md
-    │       ├── analysis_defensive.md
-    │       └── investment_report.md
+    │       ├── analysis_kr_cyclical.md
+    │       ├── analysis_kr_growth.md
+    │       ├── analysis_kr_finance.md
+    │       ├── analysis_kr_defensive.md
+    │       ├── analysis_us_growth.md
+    │       ├── analysis_us_defensive.md
+    │       ├── kr_investment_report.md
+    │       └── us_investment_report.md
     └── portfolio/            # 포트폴리오 추천 (MD)
         └── {YYYYMMDD}/
-            └── final_recommendation.md
+            ├── kr_final_recommendation.md
+            └── us_final_recommendation.md
 ```
 
 ---
@@ -135,36 +165,47 @@ market_lens_ai/
 
 ```bash
 # 기본 실행 (전략당 1개 종목 분석)
-python live_process.py
+python3 live_process.py
 
 # 전략당 3개 종목 분석
-python live_process.py -m 3
+python3 live_process.py -m 3
 
 # 스크리닝 건너뛰기 (기존 결과 사용)
-python live_process.py --skip-screener
+python3 live_process.py --skip-screener
 
 # 포트폴리오 추천 건너뛰기
-python live_process.py --skip-portfolio
+python3 live_process.py --skip-portfolio
 ```
 
 ### 개별 단계 실행
 
 ```bash
 # Step 1: 스크리닝만 실행
-python stock_screener.py
+python3 stock_screener.py
 
 # Step 2: 분석만 실행 (가장 최근 screener 결과 사용)
-python stock_analyzer.py
+python3 stock_analyzer.py
 # 또는 특정 screener 폴더 지정
-python stock_analyzer.py output/screener/20251207
+python3 stock_analyzer.py output/screener/20251207
 
 # Step 3: 포트폴리오 추천만 실행 (가장 최근 analyzer 결과 사용)
-python portfolio_maker.py
+python3 portfolio_maker.py
 # 또는 특정 analyzer 폴더 지정
-python portfolio_maker.py output/analyzer/20251207
+python3 portfolio_maker.py output/analyzer/20251207
 ```
 
 ---
+
+## 📎 근거 데이터(파일 첨부) 분석 방식
+
+`stock_analyzer.py`는 스크리닝된 종목(실제로 분석하는 상위 N개)에 대해 다음 CSV를 생성한 뒤 Gemini 요청에 **파일 첨부로 포함**합니다.
+
+- **가격 데이터**: 최근 1년 일봉 OHLCV + 보조지표 (`*_ohlcv_1y_ta.csv`)
+  - SMA(5/20/60/120), RSI(14), STOCH(14,3,3), MFI(14), ATR(14)
+  - MACD(12,26,9), +DI(14), -DI(14), ADX(14)
+- **재무 데이터**: 최근 5개년 + 분기 + TTM(가능하면) (`*_financials_5y_ttm.csv`)
+
+> 참고: 한국 종목은 `005930` 같은 숫자 티커를 `yfinance`용으로 `.KS/.KQ`를 자동 시도합니다.
 
 ## 💡 모듈 사용법
 

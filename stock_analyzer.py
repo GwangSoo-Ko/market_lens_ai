@@ -50,6 +50,20 @@ except ImportError:
     print("   다음 명령어로 설치해주세요: pip install google-genai")
     sys.exit(1)
 
+try:
+    import yfinance as yf
+except ImportError:
+    print("❌ yfinance 패키지가 설치되어 있지 않습니다.")
+    print("   다음 명령어로 설치해주세요: pip install yfinance")
+    sys.exit(1)
+
+try:
+    import talib
+except ImportError:
+    print("❌ ta-lib(talib) 패키지가 설치되어 있지 않습니다.")
+    print("   다음 명령어로 설치해주세요: pip install ta-lib")
+    sys.exit(1)
+
 
 # =============================================================================
 # 상수 정의
@@ -58,6 +72,7 @@ except ImportError:
 OUTPUT_BASE_DIR = 'output'
 SCREENER_OUTPUT_DIR = 'output/screener'  # 스크리닝 결과 읽기 경로
 ANALYZER_OUTPUT_DIR = 'output/analyzer'  # 분석 결과 저장 경로
+MARKET_DATA_OUTPUT_DIR = 'output/market_data'  # yfinance 기반 근거 데이터 저장 경로
 
 # 시장 정보
 MARKET_INFO = {
@@ -97,6 +112,336 @@ API_DELAY = 1.0
 
 
 # =============================================================================
+# yfinance 기반 근거 데이터 생성 (CSV)
+# =============================================================================
+
+def _safe_str(value) -> str:
+    return '' if value is None else str(value)
+
+
+def _slugify_filename(value: str) -> str:
+    value = _safe_str(value).strip()
+    for ch in ['/', '\\', ':', '*', '?', '"', '<', '>', '|', ' ']:
+        value = value.replace(ch, '_')
+    return value
+
+
+def normalize_yfinance_ticker(raw_ticker: str, market: Optional[str]) -> List[str]:
+    """
+    스크리너 티커를 yfinance(Yahoo) 심볼 후보 리스트로 변환.
+    - 미국: class 주식 등 'BRK.B' -> 'BRK-B' 보정 시도
+    - 한국: 6자리 숫자 -> .KS/.KQ 순으로 시도
+    """
+    t = _safe_str(raw_ticker).strip()
+    if not t:
+        return []
+
+    # TradingView 형식(예: KRX:005930) 대응
+    if ':' in t:
+        t = t.split(':', 1)[1]
+
+    candidates: List[str] = []
+
+    if market == 'us':
+        candidates.append(t)
+        if '.' in t:
+            candidates.append(t.replace('.', '-'))
+    elif market == 'kr':
+        # 이미 suffix가 있으면 그대로
+        if '.' in t:
+            candidates.append(t)
+        else:
+            if t.isdigit() and len(t) == 6:
+                candidates.extend([f'{t}.KS', f'{t}.KQ'])
+            else:
+                candidates.append(t)
+    else:
+        candidates.append(t)
+
+    # 중복 제거(순서 유지)
+    seen = set()
+    uniq = []
+    for c in candidates:
+        if c and c not in seen:
+            uniq.append(c)
+            seen.add(c)
+    return uniq
+
+
+def _fetch_ohlcv_1y(ticker: yf.Ticker) -> pd.DataFrame:
+    df = ticker.history(period='1y', interval='1d', auto_adjust=False)
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df = df.reset_index()
+    # Date/Datetime 컬럼명을 통일
+    if 'Date' in df.columns:
+        df = df.rename(columns={'Date': 'date'})
+    elif 'Datetime' in df.columns:
+        df = df.rename(columns={'Datetime': 'date'})
+    elif 'index' in df.columns:
+        df = df.rename(columns={'index': 'date'})
+
+    # 지표 계산을 위해 날짜 오름차순 정렬
+    if 'date' in df.columns:
+        df = df.sort_values('date', ascending=True).reset_index(drop=True)
+
+    # =============================================================================
+    # TA-Lib 보조지표 추가
+    # - SMA: 5, 20, 60, 120
+    # - RSI: 14
+    # - STOCH: (14, 3, 3) → slowk/slowd
+    # - MFI: 14
+    # - ATR: 14
+    # =============================================================================
+    required_cols = {'High', 'Low', 'Close', 'Volume'}
+    if required_cols.issubset(df.columns):
+        high = df['High'].astype(float).to_numpy()
+        low = df['Low'].astype(float).to_numpy()
+        close = df['Close'].astype(float).to_numpy()
+        volume = df['Volume'].astype(float).to_numpy()
+
+        for p in (5, 20, 60, 120):
+            df[f'sma_{p}'] = talib.SMA(close, timeperiod=p)
+
+        df['rsi_14'] = talib.RSI(close, timeperiod=14)
+
+        stoch_k, stoch_d = talib.STOCH(
+            high,
+            low,
+            close,
+            fastk_period=14,
+            slowk_period=3,
+            slowk_matype=0,
+            slowd_period=3,
+            slowd_matype=0,
+        )
+        df['stoch_k_14_3_3'] = stoch_k
+        df['stoch_d_14_3_3'] = stoch_d
+
+        df['mfi_14'] = talib.MFI(high, low, close, volume, timeperiod=14)
+        df['atr_14'] = talib.ATR(high, low, close, timeperiod=14)
+
+        macd, macd_signal, macd_hist = talib.MACD(
+            close,
+            fastperiod=12,
+            slowperiod=26,
+            signalperiod=9,
+        )
+        df['macd_12_26_9'] = macd
+        df['macd_signal_12_26_9'] = macd_signal
+        df['macd_hist_12_26_9'] = macd_hist
+
+        df['plus_di_14'] = talib.PLUS_DI(high, low, close, timeperiod=14)
+        df['minus_di_14'] = talib.MINUS_DI(high, low, close, timeperiod=14)
+        df['adx_14'] = talib.ADX(high, low, close, timeperiod=14)
+
+    return df
+
+
+def _as_long_statement(
+    df: pd.DataFrame,
+    statement: str,
+    frequency: str,
+    ticker_input: str,
+    ticker_yfinance: str,
+    currency: Optional[str],
+) -> pd.DataFrame:
+    """
+    yfinance 재무 DataFrame(행=계정, 열=기간)을 LLM 친화적인 long 포맷으로 변환.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            'ticker_input', 'ticker_yfinance', 'statement', 'frequency',
+            'period_end', 'item', 'value', 'currency',
+        ])
+
+    wide = df.copy()
+    wide.index = wide.index.astype(str)
+    wide.columns = [pd.to_datetime(c).date().isoformat() if hasattr(c, 'date') else str(c) for c in wide.columns]
+
+    # pandas 2.1+에서 stack 구현 변경으로 FutureWarning 발생 → future_stack=True 사용.
+    # 단, future_stack=True에서는 dropna 인자를 함께 지정할 수 없음(예외 발생).
+    # 구버전(pandas<2.1) 호환을 위해 실패 시 dropna=False로 fallback.
+    try:
+        stacked = wide.stack(future_stack=True)
+    except TypeError:
+        stacked = wide.stack(dropna=False)
+    except Exception:
+        stacked = wide.stack(dropna=False)
+
+    long_df = (
+        stacked
+        .reset_index()
+        .rename(columns={'level_0': 'item', 'level_1': 'period_end', 0: 'value'})
+    )
+    long_df.insert(0, 'ticker_input', ticker_input)
+    long_df.insert(1, 'ticker_yfinance', ticker_yfinance)
+    long_df.insert(2, 'statement', statement)
+    long_df.insert(3, 'frequency', frequency)
+    long_df['currency'] = currency
+    return long_df
+
+
+def _trim_last_n_periods(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cols = list(df.columns)
+    # 가능한 경우 날짜로 정렬(최신 우선) 후 상위 n개 사용
+    try:
+        cols_dt = pd.to_datetime(cols, errors='coerce')
+        order = (
+            pd.Series(range(len(cols)), index=cols_dt)
+            .sort_index(ascending=False)
+            .tolist()
+        )
+        cols_sorted = [cols[i] for i in order if pd.notna(cols_dt[i])]
+        # 변환 불가 컬럼이 섞여 있으면 원래 순서 유지로 fallback
+        if len(cols_sorted) >= 1:
+            cols = cols_sorted + [c for c in cols if c not in cols_sorted]
+    except Exception:
+        pass
+    return df.loc[:, cols[:n]]
+
+
+def _ttm_from_quarterly(df_quarterly: pd.DataFrame) -> pd.DataFrame:
+    """
+    분기 재무(열=기간)에서 최근 4개 분기 합으로 TTM 1개 열 생성.
+    (yfinance trailing 데이터가 없을 때 fallback)
+    """
+    if df_quarterly is None or df_quarterly.empty:
+        return pd.DataFrame()
+    q = df_quarterly.copy()
+    # yfinance는 최신 기간이 먼저 오는 경우가 많아 그대로 사용
+    cols = list(q.columns)[:4]
+    if len(cols) < 4:
+        return pd.DataFrame()
+    ttm_col_name = cols[0]  # 가장 최신 분기 end-date를 대표값으로 사용
+    ttm = q.loc[:, cols].sum(axis=1, min_count=1).to_frame(name=ttm_col_name)
+    return ttm
+
+
+def fetch_and_save_market_data_for_stock(
+    raw_ticker: str,
+    market: Optional[str],
+    output_dir: str,
+    refresh: bool = True,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    종목 1개에 대해:
+    - 최근 1년 OHLCV(+ TA-Lib 보조지표) CSV
+    - 최근 5개년(가능한 범위) + 분기 + TTM(가능하면 trailing, 아니면 4Q 합) 재무 CSV
+    를 생성하고 경로를 반환.
+
+    Returns:
+        (resolved_yfinance_ticker, price_csv_path, financials_csv_path)
+    """
+    ticker_input = _safe_str(raw_ticker).strip()
+    if not ticker_input:
+        return None, None, None
+
+    output_root = Path(output_dir)
+    price_dir = output_root / 'prices'
+    fin_dir = output_root / 'financials'
+    price_dir.mkdir(parents=True, exist_ok=True)
+    fin_dir.mkdir(parents=True, exist_ok=True)
+
+    # 저장 파일명은 input ticker 기반으로 고정 (시장별 중복 대비)
+    slug = _slugify_filename(f'{market}_{ticker_input}' if market else ticker_input)
+    price_path = str(price_dir / f'{slug}_ohlcv_1y_ta.csv')
+    fin_path = str(fin_dir / f'{slug}_financials_5y_ttm.csv')
+
+    if not refresh and os.path.exists(price_path) and os.path.exists(fin_path):
+        return ticker_input, price_path, fin_path
+
+    resolved = None
+    last_err = None
+    for candidate in normalize_yfinance_ticker(ticker_input, market):
+        try:
+            t = yf.Ticker(candidate)
+
+            # 가격 1년(+ 지표)
+            ohlcv = _fetch_ohlcv_1y(t)
+            if ohlcv is None or ohlcv.empty:
+                raise ValueError(f'No OHLCV data for {candidate}')
+
+            # 통화
+            info = {}
+            try:
+                info = t.info or {}
+            except Exception:
+                info = {}
+            currency = info.get('financialCurrency') or info.get('currency')
+
+            # 재무(연간/분기/TTM)
+            # income statement
+            income_y = getattr(t, 'income_stmt', pd.DataFrame())
+            income_q = getattr(t, 'quarterly_income_stmt', pd.DataFrame())
+            if income_y is None or income_y.empty:
+                income_y = getattr(t, 'financials', pd.DataFrame())
+            if income_q is None or income_q.empty:
+                income_q = getattr(t, 'quarterly_financials', pd.DataFrame())
+
+            income_ttm = pd.DataFrame()
+            try:
+                if hasattr(t, 'get_income_stmt'):
+                    income_ttm = t.get_income_stmt(freq='trailing')  # 최신 yfinance
+            except Exception:
+                income_ttm = pd.DataFrame()
+            if income_ttm is None or income_ttm.empty:
+                income_ttm = _ttm_from_quarterly(income_q)
+
+            # cash flow
+            cash_y = getattr(t, 'cash_flow', pd.DataFrame())
+            cash_q = getattr(t, 'quarterly_cash_flow', pd.DataFrame())
+            cash_ttm = pd.DataFrame()
+            try:
+                if hasattr(t, 'get_cash_flow'):
+                    cash_ttm = t.get_cash_flow(freq='trailing')
+            except Exception:
+                cash_ttm = pd.DataFrame()
+            if cash_ttm is None or cash_ttm.empty:
+                cash_ttm = _ttm_from_quarterly(cash_q)
+
+            # balance sheet (TTM 없음: 최신 분기/연간 제공)
+            bal_y = getattr(t, 'balance_sheet', pd.DataFrame())
+            bal_q = getattr(t, 'quarterly_balance_sheet', pd.DataFrame())
+
+            # 최근 5개년(가능 범위)만 남김: yfinance는 종종 최신이 먼저 정렬되어 있음
+            income_y = _trim_last_n_periods(income_y, 5)
+            cash_y = _trim_last_n_periods(cash_y, 5)
+            bal_y = _trim_last_n_periods(bal_y, 5)
+
+            # 금융 long 포맷 통합
+            fin_long_parts = [
+                _as_long_statement(income_y, 'income_statement', 'yearly', ticker_input, candidate, currency),
+                _as_long_statement(income_q, 'income_statement', 'quarterly', ticker_input, candidate, currency),
+                _as_long_statement(income_ttm, 'income_statement', 'ttm', ticker_input, candidate, currency),
+                _as_long_statement(cash_y, 'cash_flow', 'yearly', ticker_input, candidate, currency),
+                _as_long_statement(cash_q, 'cash_flow', 'quarterly', ticker_input, candidate, currency),
+                _as_long_statement(cash_ttm, 'cash_flow', 'ttm', ticker_input, candidate, currency),
+                _as_long_statement(bal_y, 'balance_sheet', 'yearly', ticker_input, candidate, currency),
+                _as_long_statement(bal_q, 'balance_sheet', 'quarterly', ticker_input, candidate, currency),
+            ]
+            fin_long = pd.concat([p for p in fin_long_parts if p is not None and not p.empty], ignore_index=True)
+
+            # 저장
+            ohlcv.to_csv(price_path, index=False, encoding='utf-8-sig')
+            fin_long.to_csv(fin_path, index=False, encoding='utf-8-sig')
+
+            resolved = candidate
+            break
+        except Exception as e:
+            last_err = e
+            continue
+
+    if resolved is None:
+        raise RuntimeError(f"yfinance 데이터 수집 실패: {ticker_input} (market={market}) / last_error={last_err}")
+
+    return resolved, price_path, fin_path
+
+
+# =============================================================================
 # StockAnalyzer 클래스
 # =============================================================================
 
@@ -117,6 +462,30 @@ class StockAnalyzer:
         """
         self.model = model
         self.client = self._init_client(api_key)
+        self.market_data_dir: Optional[str] = None
+
+    def _extract_text_from_response(self, response: object) -> str:
+        """
+        google-genai 응답에서 텍스트만 안전하게 추출.
+        response.text는 비텍스트 파트(thought_signature 등)가 섞이면 경고를 출력할 수 있어,
+        candidates.content.parts[*].text를 직접 join하여 경고를 방지한다.
+        """
+        try:
+            candidates = getattr(response, 'candidates', None) or []
+            for cand in candidates:
+                content = getattr(cand, 'content', None)
+                parts = getattr(content, 'parts', None) or []
+                texts = []
+                for part in parts:
+                    text = getattr(part, 'text', None)
+                    if text:
+                        texts.append(text)
+                if texts:
+                    return '\n'.join(texts).strip()
+        except Exception:
+            pass
+
+        return ""
         
     def _init_client(self, api_key: Optional[str] = None) -> genai.Client:
         """Gemini 클라이언트 초기화"""
@@ -204,8 +573,12 @@ class StockAnalyzer:
     
     def _create_stock_info_text(self, row: pd.Series, strategy: str) -> str:
         """종목 정보를 텍스트로 변환"""
+        ticker_value = row.get('ticker')
+        if pd.isna(ticker_value) or ticker_value is None:
+            ticker_value = row.get('name')
+
         info_parts = [
-            f"- 티커: {row.get('ticker', 'N/A')}",
+            f"- 티커: {ticker_value if ticker_value is not None else 'N/A'}",
             f"- 회사명: {row.get('name', 'N/A')}",
             f"- 현재가: ${row.get('close', 0):.2f}",
             f"- 일간 변동률: {row.get('change', 0):.2f}%",
@@ -255,8 +628,12 @@ class StockAnalyzer:
         """분석 프롬프트 생성"""
         strategy_info = STRATEGY_INFO.get(strategy, {})
         stock_info = self._create_stock_info_text(row, strategy)
+
+        ticker_value = row.get('ticker')
+        if pd.isna(ticker_value) or ticker_value is None:
+            ticker_value = row.get('name')
         
-        prompt = f"""너는 월스트리트에서 일하고 있는 기업 분석 및 주식 시장 분석의 전문가야. 너의 이름은 'Gemini Stock Analyst'야. 너는 사용자가 입력한 주식 종목에({row.get('ticker', 'Unknown')}) 대해서 각 단계별로 분석하고 최종 투자 의사 결정에 도움을 주는 역할을 한다.
+        prompt = f"""너는 월스트리트에서 일하고 있는 기업 분석 및 주식 시장 분석의 전문가야. 너의 이름은 'Gemini Stock Analyst'야. 너는 사용자가 입력한 주식 종목에({ticker_value if ticker_value is not None else 'Unknown'}) 대해서 각 단계별로 분석하고 최종 투자 의사 결정에 도움을 주는 역할을 한다.
 목표 및 역할:
 * 사용자가 요청한 특정 주식 종목에 대해 심층적인 기업 및 시장 분석 보고서를 제공한다.
 * 보고서는 투자 의사 결정에 실질적인 도움을 줄 수 있도록 최신 정보를 기반으로 상세하고 깊이 있게 작성한다.
@@ -264,10 +641,10 @@ class StockAnalyzer:
 * 마크다운 형식을 사용한다.
 행동 및 규칙:
 1) 분석 보고서 작성:
-   a) 사용자가 입력한 종목({row.get('ticker', 'Unknown')})에 대해, 즉시 웹 검색 및 가능한 모든 도구를 활용하여 가장 최신 정보를 수집한다.
+   a) 사용자가 입력한 종목({ticker_value if ticker_value is not None else 'Unknown'})에 대해, 즉시 웹 검색 및 가능한 모든 도구를 활용하여 가장 최신 정보를 수집한다.
    b) 수집된 정보를 기반으로 아래 제시된 10단계 분석 과정을 철저히 따른다.
    c) 각 단계별 분석 내용은 가능한 한 상세하고 심층적이어야 하며, 데이터와 근거를 명확하게 제시해야 한다.
-   d) 특히 '기술적 분석' 단계에서는 최근 30일간의 주가 트렌드와 차트 패턴 및 기술적 지표를 분석하고, '재무 상태 분석' 단계에서는 최근 3개년 및 최근 4개 분기 재무제표를 종합 분석한 내용을 필수로 포함한다.
+   d) 특히 '기술적 분석' 단계에서는 최근 1년간의 주가 트렌드와 차트 패턴 및 첨부된 모든 기술적 지표를 분석하고, '재무 상태 분석' 단계에서는 최근 3개년 및 최근 4개 분기 재무제표를 종합 분석한 내용을 필수로 포함한다.
    e) '가치 평가' 단계에서는 아래 절차에 명시된 가치평가기법을 필수로 활용하여 기업의 적정 가치와 현재 주가를 비교하여 투자 의견을 제시하도록 한다.
 2) 10단계 분석 절차 (보고서 목차):
    1. 회사 개요: 기업의 핵심 사업, 역사, 현재 시장 위치.
@@ -283,6 +660,9 @@ class StockAnalyzer:
 3) 전문성 유지:
    a) 답변은 통계적 데이터와 금융 지표에 근거하여 작성한다.
    b) 주관적인 감정 표현이나 불필요한 사족은 피하고, 객관적이고 사실적인 정보를 제공하는 데 집중한다.
+4) 첨부 데이터 우선:
+   a) 요청에 CSV 파일(최근 1년 OHLCV+보조지표, 재무제표)이 첨부되었으면, 해당 첨부 데이터를 **가장 우선적인 근거 데이터**로 사용한다.
+   b) 첨부 데이터와 웹 검색 결과가 충돌하면, 원칙적으로 첨부 데이터를 우선하되, 차이가 발생한 이유/가능한 원인(시점/통화/단위/정정 공시 등)을 명시한다.
 전반적인 어조:
 * 전문적이고 신뢰감을 주는 어조를 사용한다.
 * 보고서 형식에 맞춰 격식 있고 명확한 문체를 유지한다.
@@ -290,7 +670,7 @@ class StockAnalyzer:
         
         return prompt
     
-    def analyze_stock(self, row: pd.Series, strategy: str) -> Optional[str]:
+    def analyze_stock(self, row: pd.Series, strategy: str, market: Optional[str] = None) -> Optional[str]:
         """
         단일 종목 분석
         
@@ -301,7 +681,11 @@ class StockAnalyzer:
         Returns:
             분석 결과 텍스트 (실패 시 None)
         """
-        ticker = row.get('ticker', 'Unknown')
+        ticker = row.get('ticker')
+        if pd.isna(ticker) or ticker is None:
+            ticker = row.get('name')
+        if pd.isna(ticker) or ticker is None:
+            ticker = 'Unknown'
         
         try:
             prompt = self._create_analysis_prompt(row, strategy)
@@ -309,18 +693,66 @@ class StockAnalyzer:
             google_search_tool = types.Tool(
                 google_search=types.GoogleSearch()
             )
+
+            # yfinance 기반 근거 CSV 생성 + Gemini에 파일 첨부
+            contents = [prompt]
+            uploaded_files = []
+            if self.market_data_dir:
+                try:
+                    _, price_csv, fin_csv = fetch_and_save_market_data_for_stock(
+                        raw_ticker=_safe_str(ticker),
+                        market=market,
+                        output_dir=self.market_data_dir,
+                        refresh=True,
+                    )
+
+                    # CSV 업로드 후 첨부
+                    price_file = self.client.files.upload(
+                        file=price_csv,
+                        config=types.UploadFileConfig(
+                            display_name=f'{_safe_str(ticker)}_ohlcv_1y_ta',
+                            mime_type='text/csv',
+                        ),
+                    )
+                    fin_file = self.client.files.upload(
+                        file=fin_csv,
+                        config=types.UploadFileConfig(
+                            display_name=f'{_safe_str(ticker)}_financials_5y_ttm',
+                            mime_type='text/csv',
+                        ),
+                    )
+                    uploaded_files.extend([price_file, fin_file])
+                    contents.extend([
+                        "다음 첨부된 CSV 파일(최근 1년 OHLCV+보조지표, 재무제표)을 최우선 근거로 사용해 분석해줘.",
+                        price_file,
+                        fin_file,
+                    ])
+                except Exception as e:
+                    # 첨부 실패 시에도 분석은 계속 진행(텍스트 프롬프트 + 웹검색)
+                    print(f"    ⚠️ {ticker} 근거 데이터(CSV) 첨부 실패(분석은 계속): {str(e)}")
             
             response = self.client.models.generate_content(
                 model=self.model,
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     tools=[google_search_tool],
                     temperature=0,
                     max_output_tokens=60000,
                 )
             )
-            
-            return response.text
+
+            # 업로드 파일 정리(베스트 프랙티스)
+            for f in uploaded_files:
+                try:
+                    self.client.files.delete(name=f.name)
+                except Exception:
+                    pass
+
+            analysis_text = self._extract_text_from_response(response)
+            if not analysis_text:
+                raise ValueError("Gemini 응답에서 텍스트를 추출하지 못했습니다. (content.parts에 text 없음)")
+
+            return analysis_text
             
         except Exception as e:
             print(f"    ⚠️ {ticker} 분석 실패: {str(e)}")
@@ -330,7 +762,8 @@ class StockAnalyzer:
         self, 
         df: pd.DataFrame, 
         strategy: str,
-        max_stocks: int = 10
+        max_stocks: int = 10,
+        market: Optional[str] = None,
     ) -> List[Dict]:
         """
         전략별 종목 분석
@@ -355,7 +788,7 @@ class StockAnalyzer:
             
             print(f"   [{idx+1}/{min(len(df), max_stocks)}] {ticker} ({name}) 분석 중...")
             
-            analysis = self.analyze_stock(row, strategy)
+            analysis = self.analyze_stock(row, strategy, market=market)
             
             if analysis:
                 results.append({
@@ -559,6 +992,12 @@ class StockAnalyzer:
             os.makedirs(analyzer_output_dir, exist_ok=True)
         
         print(f"📁 분석 결과 저장 경로: {analyzer_output_dir}")
+
+        # 2-1. yfinance 근거 데이터 저장 디렉토리 설정 (screener_dir 날짜 폴더와 동일하게)
+        screener_folder_name = os.path.basename(os.path.normpath(screener_dir))
+        self.market_data_dir = os.path.join(MARKET_DATA_OUTPUT_DIR, screener_folder_name)
+        os.makedirs(self.market_data_dir, exist_ok=True)
+        print(f"📎 근거 데이터(CSV) 저장 경로: {self.market_data_dir}")
         
         # 3. 시장별 > 전략별 분석
         all_market_analyses = {}  # {market: {strategy: [analyses]}}
@@ -578,7 +1017,7 @@ class StockAnalyzer:
                 strategy_info = STRATEGY_INFO.get(strategy, {})
                 print(f"\n📊 [{market_name}] {strategy_info.get('name', strategy)} 전략 분석...")
                 
-                analyses = self.analyze_strategy(df, strategy, max_stocks_per_strategy)
+                analyses = self.analyze_strategy(df, strategy, max_stocks_per_strategy, market=market)
                 market_analyses[strategy] = analyses
                 total_analyzed += len(analyses)
             
