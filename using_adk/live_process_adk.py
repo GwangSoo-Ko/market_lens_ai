@@ -1,0 +1,277 @@
+"""
+Live Process (ADK 버전) - 전체 투자 분석 파이프라인 실행기
+
+stock_screener.py → stock_analyzer_adk.py → portfolio_maker_adk.py 를
+순차적으로 실행하여 스크리닝부터 최종 포트폴리오 추천까지 자동화합니다.
+
+스크리너 로직은 기존과 동일(LLM 없음)하고,
+분석/포트폴리오 단계의 LLM 호출만 ADK 기반으로 동작합니다.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from datetime import datetime
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+
+def run_screener(market: str = None):
+    print("\n" + "=" * 70)
+    print("📊 [1/3] 스크리닝 시작")
+    print("=" * 70)
+
+    from stock_screener import run_all_markets, run_all_screeners, save_results, print_summary
+
+    if market is None:
+        all_results, saved_files = run_all_markets(
+            markets=None,
+            filter_sector=True,
+        )
+    else:
+        results = run_all_screeners(market=market, filter_sector=True)
+        print_summary(results, market=market)
+        print("\n📁 결과 저장 중...")
+        saved_files = save_results(results, market=market)
+
+    if not saved_files:
+        print("❌ 스크리닝 결과가 없습니다.")
+        return None
+
+    return os.path.dirname(saved_files[0])
+
+
+def run_analyzer(
+    screener_dir: str,
+    max_stocks: int = 1,
+    model: str = None,
+    concurrency: int = 1,
+):
+    print("\n" + "=" * 70)
+    print("🤖 [2/3] (ADK) LLM 종목 분석 시작")
+    print("=" * 70)
+
+    from stock_analyzer_adk import StockAnalyzerADK
+
+    analyzer = StockAnalyzerADK(model=model) if model else StockAnalyzerADK()
+    _, analyzer_dir = analyzer.run_analysis(
+        screener_dir,
+        max_stocks_per_strategy=max_stocks,
+        concurrency=concurrency,
+    )
+    if not analyzer_dir:
+        print("❌ 분석 결과가 없습니다.")
+        return None
+    return analyzer_dir
+
+
+def run_portfolio(analyzer_dir: str, model: str = None, text_mode: bool = False):
+    print("\n" + "=" * 70)
+    print("🎯 [3/3] (ADK) 포트폴리오 추천 생성 시작")
+    print("=" * 70)
+
+    from portfolio_maker_adk import PortfolioMakerADK
+
+    maker = PortfolioMakerADK(model=model) if model else PortfolioMakerADK()
+    results, portfolio_dir = maker.generate_all_recommendations(
+        analyzer_dir,
+        use_text_mode=text_mode,
+    )
+    if not results or not portfolio_dir:
+        print("❌ 포트폴리오 추천 생성 실패.")
+        return None
+    return portfolio_dir
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="(ADK) 전체 투자 분석 파이프라인 실행기",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python live_process_adk.py                    # 기본 실행 (전략당 1개 종목)
+  python live_process_adk.py -m 3               # 전략당 3개 종목 분석
+  python live_process_adk.py --skip-screener    # 스크리닝 건너뛰기 (기존 결과 사용)
+  python live_process_adk.py --skip-portfolio   # 포트폴리오 추천 건너뛰기
+        """,
+    )
+    parser.add_argument(
+        "--market",
+        "-M",
+        type=str,
+        default=None,
+        choices=["us", "kr"],
+        help="스크리닝할 시장 선택 (지정하지 않으면 미국+한국 모두 실행)",
+    )
+    parser.add_argument(
+        "--max-stocks",
+        "-m",
+        type=int,
+        default=1,
+        help="전략당 최대 분석 종목 수 (기본값: 1)",
+    )
+    parser.add_argument(
+        "--skip-screener",
+        action="store_true",
+        help="스크리닝 건너뛰기 (가장 최근 screener 결과 사용)",
+    )
+    parser.add_argument(
+        "--skip-portfolio",
+        action="store_true",
+        help="포트폴리오 추천 건너뛰기",
+    )
+    parser.add_argument(
+        "--screener-dir",
+        type=str,
+        default=None,
+        help="사용할 screener 결과 디렉토리 (--skip-screener와 함께 사용)",
+    )
+    parser.add_argument(
+        "--analyzer-dir",
+        type=str,
+        default=None,
+        help="사용할 analyzer 결과 디렉토리 (analyzer만 건너뛸 때 사용)",
+    )
+    parser.add_argument(
+        "--analyzer-model",
+        type=str,
+        default=None,
+        help="(선택) 분석 단계에서 사용할 Gemini 모델",
+    )
+    parser.add_argument(
+        "--analyzer-concurrency",
+        type=int,
+        default=1,
+        help="전략 내 종목 분석 병렬 동시성(기본값: 1=직렬, 권장: 2~4)",
+    )
+    parser.add_argument(
+        "--debug-config",
+        action="store_true",
+        help="현재 선택된 모델/endpoint(Dev API vs Vertex AI) 설정을 출력",
+    )
+    parser.add_argument(
+        "--use-tools",
+        action="store_true",
+        help="(실험) ADK tool/function calling 사용(모델/엔드포인트가 tool 사용을 지원해야 함)",
+    )
+    parser.add_argument(
+        "--portfolio-model",
+        type=str,
+        default=None,
+        help="(선택) 포트폴리오 단계에서 사용할 Gemini 모델",
+    )
+    parser.add_argument(
+        "--portfolio-text-mode",
+        action="store_true",
+        help="(선택) 포트폴리오 단계에서 investment_report를 텍스트 삽입 방식으로 처리",
+    )
+
+    args = parser.parse_args()
+
+    start_time = datetime.now()
+    market_name = "미국 + 한국 (전체)" if args.market is None else ("미국" if args.market == "us" else "한국")
+
+    print("=" * 70)
+    print("🚀 Market Lens AI - 전체 파이프라인 실행 (ADK)")
+    print("=" * 70)
+    print(f"⏰ 시작 시간: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🌍 시장: {market_name}")
+    print(f"📊 전략당 분석 종목 수: {args.max_stocks}")
+    print("=" * 70)
+
+    screener_dir = None
+    analyzer_dir = None
+    portfolio_dir = None
+
+    try:
+        if args.debug_config:
+            from adk_utils import print_runtime_llm_config
+
+            # 파이프라인에서 실사용 모델은 analyzer-model/portfolio-model, 없으면 각 스크립트 기본값
+            print_runtime_llm_config(model=args.analyzer_model or os.environ.get("MARKET_LENS_ADK_MODEL"))
+            print_runtime_llm_config(model=args.portfolio_model or os.environ.get("MARKET_LENS_ADK_MODEL"))
+
+        # Step 1: 스크리닝
+        if args.analyzer_dir:
+            print("\n⏭️ 스크리닝 및 분석 건너뛰기 (analyzer 디렉토리 사용)")
+            analyzer_dir = args.analyzer_dir
+        elif args.skip_screener:
+            if args.screener_dir:
+                screener_dir = args.screener_dir
+            else:
+                from stock_analyzer import get_latest_screener_dir
+
+                screener_dir = get_latest_screener_dir()
+
+            if not screener_dir or not os.path.exists(screener_dir):
+                print("❌ 스크리닝 결과 디렉토리를 찾을 수 없습니다.")
+                print("   --skip-screener 옵션을 제거하고 다시 실행하세요.")
+                sys.exit(1)
+
+            print(f"\n⏭️ 스크리닝 건너뛰기 (기존 결과 사용: {screener_dir})")
+        else:
+            screener_dir = run_screener(market=args.market)
+            if not screener_dir:
+                print("❌ 스크리닝 실패. 파이프라인을 종료합니다.")
+                sys.exit(1)
+
+        # Step 2: 분석
+        if not analyzer_dir:
+            analyzer_dir = run_analyzer(
+                screener_dir=screener_dir,
+                max_stocks=args.max_stocks,
+                model=args.analyzer_model,
+                concurrency=args.analyzer_concurrency,
+            )
+            if not analyzer_dir:
+                print("❌ 분석 실패. 파이프라인을 종료합니다.")
+                sys.exit(1)
+
+        # Step 3: 포트폴리오
+        if not args.skip_portfolio:
+            portfolio_dir = run_portfolio(
+                analyzer_dir=analyzer_dir,
+                model=args.portfolio_model,
+                text_mode=args.portfolio_text_mode,
+            )
+            if not portfolio_dir:
+                print("❌ 포트폴리오 추천 실패.")
+        else:
+            print("\n⏭️ 포트폴리오 추천 건너뛰기")
+
+        end_time = datetime.now()
+        duration = end_time - start_time
+
+        print("\n" + "=" * 70)
+        print("✅ 파이프라인 실행 완료! (ADK)")
+        print("=" * 70)
+        print(f"⏱️ 총 소요 시간: {duration}")
+        print()
+        print("📁 결과 파일 위치:")
+        if screener_dir:
+            print(f"   • 스크리닝: {screener_dir}")
+        if analyzer_dir:
+            print(f"   • 분석:     {analyzer_dir}")
+        if portfolio_dir:
+            print(f"   • 포트폴리오: {portfolio_dir}")
+        print("=" * 70)
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️ 사용자에 의해 중단되었습니다.")
+        sys.exit(130)
+    except Exception as e:
+        print(f"\n❌ 오류 발생: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+
+

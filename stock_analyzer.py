@@ -105,7 +105,7 @@ STRATEGY_INFO = {
 }
 
 # 기본 Gemini 모델
-DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
+DEFAULT_MODEL = 'gemini-3-flash-preview'
 
 # API 호출 간 대기 시간 (초) - Rate Limiting 대응
 API_DELAY = 1.0
